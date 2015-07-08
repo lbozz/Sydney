@@ -1,0 +1,149 @@
+/* 
+Carputer V1
+by Lucas Boswell
+07/06/2015
+
+Program currently supports RFID unlocking for all doors
+
+
+
+
+-------------- TO-DO --------------
+
+* Fix EEPROM non-volatile whitelist storage
+* Remove tag from whitelist functionality
+* Check for two consecutive reads of the same tag as a validity check
+* Refactor to use more functions that return states
+* Make sure serial flush function is working and placed in the best spot
+* Implement sleep functionality to reduce overall power consumption
+* Add bluetooth infrastructure to interface UART bluetooth module to OBDII module
+* Add second RFID reader to release trunk latch
+
+
+
+
+
+*/
+#include <EEPROM.h>
+
+const int lockTime = 200;
+
+int lRelay = 2;
+int uRelay = 3;
+int rfidEnable = 52;
+int programPin = 8; //jumper from 30 to 31 to activate rfid program mode
+int programPinGnd = 9;
+
+
+//RFID Globals
+static String whitelist[10]; // 10 string array
+static int whitelistHead = 0;
+
+
+void setup() {
+  rfidInit(); 
+  pinMode(lRelay, OUTPUT);
+  pinMode(uRelay, OUTPUT);
+  pinMode(programPin, INPUT_PULLUP);
+  pinMode(programPinGnd, OUTPUT);
+  digitalWrite(programPinGnd, LOW);
+  digitalWrite(lRelay, HIGH);
+  digitalWrite(uRelay, HIGH);
+}
+
+
+void loop() {
+  rfidCheck();
+  delay(500);
+}
+
+void rfidInit() {
+  Serial1.begin(2400); // RFID reader SOUT pin connected to Serial RX pin at 2400bps 
+  pinMode(rfidEnable,OUTPUT);   // Set digital pin rfidEnable as OUTPUT to connect it to the RFID /ENABLE pin 
+  digitalWrite(rfidEnable, LOW);                  // Activate the RFID reader  
+  readEEPROM();
+}
+
+void rfidCheck() {
+  // RFID Local Variables
+  static int  val = 0; 
+  static char code[10]; 
+  static int bytesread = 0; 
+  // 
+
+  if(Serial1.available() > 0) {          // if data available from reader 
+    if((val = Serial1.read()) == 10) {   // check for header 
+      bytesread = 0; 
+      while(bytesread<10) {              // read 10 digit code 
+        if( Serial1.available() > 0) { 
+          val = Serial1.read(); 
+          if((val == 10)||(val == 13)) { // if header or stop bytes before the 10 digit reading 
+            break;                       // stop reading 
+          } 
+          code[bytesread] = val;         // add the digit           
+          bytesread++;                   // ready to read next digit  
+        } 
+      } 
+      if(bytesread == 10) {              // if 10 digit read is complete 
+        whitelistCheck(code);
+      } 
+      bytesread = 0; 
+      digitalWrite(rfidEnable, HIGH);                  // deactivate the RFID reader for a moment so it will not flood
+      delay(1500);                       // wait for a bit 
+      digitalWrite(rfidEnable, LOW);                  // Activate the RFID reader
+    } 
+  } 
+}
+
+void whitelistCheck(char charTag[10]) {
+  //check rfid code here
+  String tag = String(charTag); //convert from 10 digit char array to string object
+  int match = 0;
+  
+  for (int i = 0; i < 10; i++) {
+    if (tag == whitelist[i]) {
+      unlock(); //If valid tag is in whitelist, unlock
+      delay(500);
+      serialFlush();
+      match++;
+    }
+  }
+  if (match == 0 && digitalRead(programPin) == 0) { //if the recently read tag isn't in whitelist, and the program pin is enabled, add the tag to whitelist
+    whitelist[whitelistHead] = tag;
+    addTagEEPROM(tag, whitelistHead);
+    unlock();
+    serialFlush();
+    whitelistHead++;
+  }  
+}
+
+void addTagEEPROM(String tag, int whitelistHead) {
+  int eeAddress = whitelistHead * 10;   //Location we want the data to be put.
+  EEPROM.put( eeAddress, tag );
+}
+
+void readEEPROM() {
+  int eeAddress = 0;
+  for ( int i = 0; i < 10; i++) {
+    EEPROM.get( eeAddress, whitelist[i]);
+    eeAddress = eeAddress + 10;
+  }
+}
+
+void serialFlush(){
+  while(Serial1.available() > 0) {
+    char t = Serial1.read();
+  }
+} 
+
+void lock() {
+  digitalWrite(lRelay, LOW);   
+  delay(lockTime);              
+  digitalWrite(lRelay, HIGH);    
+}
+
+void unlock() {
+  digitalWrite(uRelay, LOW);   
+  delay(lockTime);              
+  digitalWrite(uRelay, HIGH);    
+}
